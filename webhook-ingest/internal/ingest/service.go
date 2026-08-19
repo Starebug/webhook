@@ -37,15 +37,6 @@ func (s *Service) Stats(accountID string) stats.AccountStats {
 // Ingest stores a delivery and kicks off processing. Processing runs
 // asynchronously so the provider gets a fast acknowledgement.
 func (s *Service) Ingest(ctx context.Context, evt Event) error {
-	exists, err := s.store.EventExists(ctx, evt.EventID)
-	if err != nil {
-		return err
-	}
-	if exists {
-		s.log.Info("duplicate delivery ignored", "event_id", evt.EventID)
-		return nil
-	}
-
 	payload, err := json.Marshal(evt)
 	if err != nil {
 		return err
@@ -61,9 +52,21 @@ func (s *Service) Ingest(ctx context.Context, evt Event) error {
 		OccurredAt:   evt.OccurredAt,
 		Payload:      payload,
 	}
-	if err := s.store.InsertEvent(ctx, rec); err != nil {
+
+	// InsertEvent returns true if newly inserted, false if duplicate.
+	// This is atomic and race-free thanks to the unique constraint on event_id.
+	wasInserted, err := s.store.InsertEvent(ctx, rec)
+	if err != nil {
 		return err
 	}
+
+	if !wasInserted {
+		// Duplicate delivery - event_id already exists
+		s.log.Info("duplicate delivery ignored", "event_id", evt.EventID)
+		return nil
+	}
+
+	// Event is new - update call record and increment stats
 	if err := s.store.UpsertCall(ctx, rec); err != nil {
 		return err
 	}

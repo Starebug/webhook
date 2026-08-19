@@ -72,13 +72,20 @@ func (s *Store) EventExists(ctx context.Context, eventID string) (bool, error) {
 	return true, nil
 }
 
-// InsertEvent stores the raw delivery.
-func (s *Store) InsertEvent(ctx context.Context, e Event) error {
-	_, err := s.pool.Exec(ctx,
+// InsertEvent stores the raw delivery. Returns true if the event was newly
+// inserted, false if it was a duplicate (already exists). This enables
+// idempotent ingestion when combined with the unique constraint on event_id.
+func (s *Store) InsertEvent(ctx context.Context, e Event) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
 		`INSERT INTO events (event_id, call_id, account_id, payload)
-		 VALUES ($1, $2, $3, $4)`,
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (event_id) DO NOTHING`,
 		e.EventID, e.CallID, e.AccountID, e.Payload)
-	return err
+	if err != nil {
+		return false, err
+	}
+	// RowsAffected returns 1 if inserted, 0 if duplicate (conflict)
+	return tag.RowsAffected() > 0, nil
 }
 
 // UpsertCall creates or refreshes the call record for this event.
