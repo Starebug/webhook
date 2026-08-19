@@ -6,6 +6,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/convin/webhook-ingest/internal/stats"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -135,4 +137,67 @@ func (s *Store) AccountStats(ctx context.Context, accountID string) (Stats, erro
 		return Stats{}, err
 	}
 	return st, nil
+}
+
+// AllAccountStats returns stats for all accounts. Used for cache warm-up on startup.
+func (s *Store) AllAccountStats(ctx context.Context) (map[string]Stats, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT account_id, call_count, total_duration_sec FROM account_stats`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]Stats)
+	for rows.Next() {
+		var accountID string
+		var st Stats
+		if err := rows.Scan(&accountID, &st.CallCount, &st.TotalDurationSec); err != nil {
+			return nil, err
+		}
+		result[accountID] = st
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// StatsAdapter adapts Store to implement stats.StatsReader interface.
+type StatsAdapter struct {
+	store *Store
+}
+
+// NewStatsAdapter creates an adapter for stats cache integration.
+func (s *Store) NewStatsAdapter() *StatsAdapter {
+	return &StatsAdapter{store: s}
+}
+
+// AccountStats implements stats.StatsReader interface.
+func (a *StatsAdapter) AccountStats(ctx context.Context, accountID string) (stats.AccountStats, error) {
+	st, err := a.store.AccountStats(ctx, accountID)
+	return stats.AccountStats{
+		CallCount:        st.CallCount,
+		TotalDurationSec: st.TotalDurationSec,
+	}, err
+}
+
+// AllAccountStats implements stats.StatsReader interface.
+func (a *StatsAdapter) AllAccountStats(ctx context.Context) (map[string]stats.AccountStats, error) {
+	allStats, err := a.store.AllAccountStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]stats.AccountStats)
+	for accountID, st := range allStats {
+		result[accountID] = stats.AccountStats{
+			CallCount:        st.CallCount,
+			TotalDurationSec: st.TotalDurationSec,
+		}
+	}
+
+	return result, nil
 }

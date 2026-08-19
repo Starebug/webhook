@@ -39,7 +39,20 @@ func main() {
 	}
 	defer func() { _ = rdb.Close() }()
 
-	svc := ingest.New(st, stats.NewCache(), rdb, log)
+	// Create cache with database read-through capability
+	cache := stats.NewCacheWithReader(st.NewStatsAdapter())
+
+	// Warm up cache from database on startup (Option 2)
+	// This ensures stats are available immediately after deployment/restart
+	count, err := cache.WarmUp(ctx)
+	if err != nil {
+		log.Warn("cache warm-up failed", "err", err)
+		// Don't exit - cache will use read-through on demand
+	} else {
+		log.Info("cache warmed up", "accounts_loaded", count)
+	}
+
+	svc := ingest.New(st, cache, rdb, log)
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: httpapi.NewRouter(svc, log)}
 
 	go func() {
